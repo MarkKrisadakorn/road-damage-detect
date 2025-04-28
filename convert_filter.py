@@ -7,8 +7,8 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 
 # Path configuration
-base_path = "path_to/RDD/RDD2022"
-output_path = "path_to/RDD/RDD_YOLOv11_format"  # Output path for YOLOv11 format
+base_path = "path_to/RDD2022"
+output_path = "path_to/RDD_YOLOv11_format"  # Output path for YOLOv11 format
 
 govs = ["China_Drone", "China_MotorBike", "Czech", "India", "japan", "Norway", "United_States"]
 damageTypes = {1: "D00", 2: "D01", 3: "D10", 4: "D11", 5: "D20", 6: "D40", 7: "D43", 8: "D44"}
