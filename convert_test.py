@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 base_path = "C:/Users/DESKTOP/Desktop/RDD/RDD2022"
 output_path = "C:/Users/DESKTOP/Desktop/RDD/RDD_Kfold"  # Output path for k-fold data
 
-govs = ["China_Drone", "China_MotorBike", "Czech", "India", "japan", "Norway", "United_States"]
+govs = ["China_Drone", "China_MotorBike", "Czech", "India", "Japan", "Norway", "United_States"]
 damageTypes = {1: "D00", 2: "D10", 3: "D20", 4: "D40"}
 
 

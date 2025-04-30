@@ -10,7 +10,7 @@ from sklearn.model_selection import KFold
 base_path = "path/RDD2022"
 output_path = "path/RDD_Kfold"  # Output path for k-fold data
 
-govs = ["China_Drone", "China_MotorBike", "Czech", "India", "japan", "Norway", "United_States"]
+govs = ["China_Drone", "China_MotorBike", "Czech", "India", "Japan", "Norway", "United_States"]
 damageTypes = {1: "D00", 2: "D10", 3: "D20", 4: "D40"} 
 
 # K-fold parameters
