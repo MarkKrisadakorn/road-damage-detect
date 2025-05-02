@@ -9,15 +9,15 @@ from datetime import datetime
 # Configuration
 base_dir = "path/RDD_Kfold"
 num_folds = 5
-model_types = ["yolov11n.pt", "yolov11s.pt", "yolov11m.pt", "yolov11l.pt", "yolov11x.pt"] 
+model_types = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"] 
 epochs = 3
 imgsz = 640
-batch_size = 2  
+batch_size = 8
 patience = 20  # Early stopping patience
 device = 0  
 
 # Create timestamp for unique run identifier
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+timestamp = datetime.now().strftime("%Y%m%d__%H_%M_%S")
 
 # Function to train model on a specific fold
 def train_fold(model_type, fold_num, project_dir):
@@ -32,21 +32,12 @@ def train_fold(model_type, fold_num, project_dir):
     # Initialize model - will download if not present locally
     model = YOLO(model_type)
     
-    # Adjust batch size based on model size to avoid OOM errors
-    adjusted_batch = batch_size
-    if 'm' in model_type:
-        adjusted_batch = max(8, batch_size // 2)
-    elif 'l' in model_type:
-        adjusted_batch = max(4, batch_size // 4)
-    elif 'x' in model_type:
-        adjusted_batch = max(2, batch_size // 8)
-    
-    # Set training arguments
+    # Set training arguments - using same batch size for all models
     args = {
         "data": data_yaml,
         "epochs": epochs,
         "imgsz": imgsz,
-        "batch": adjusted_batch,
+        "batch": batch_size,  # Using the same batch size for all models
         "patience": patience,
         "device": device,
         "name": f"{model_type.split('.')[0]}_fold{fold_num}",
@@ -65,6 +56,7 @@ def train_fold(model_type, fold_num, project_dir):
         print(f"Error training {model_type} on fold {fold_num}: {e}")
         results = None
         training_success = False
+        e_msg = str(e)
     
     # End timer
     training_time = time.time() - start_time
@@ -88,7 +80,7 @@ def train_fold(model_type, fold_num, project_dir):
             "metrics": None,
             "results": None,
             "success": False,
-            "error": str(e)
+            "error": e_msg if 'e_msg' in locals() else "Unknown error"
         }
 
 # Main execution
@@ -128,83 +120,123 @@ if __name__ == "__main__":
             print(f"Results Summary for {model_type}")
             print(f"{'-'*50}")
             
-            # Extract key metrics from successful folds
-            precision = [m.box.map for m in model_metrics]
-            recall = [m.box.recall for m in model_metrics]
-            map50 = [m.box.map50 for m in model_metrics]
-            map50_95 = [m.box.map50_95 for m in model_metrics]
-            
-            # Calculate means and standard deviations
-            metrics_summary = {
-                "precision": {
-                    "mean": float(np.mean(precision)),
-                    "std": float(np.std(precision))
-                },
-                "recall": {
-                    "mean": float(np.mean(recall)),
-                    "std": float(np.std(recall))
-                },
-                "mAP50": {
-                    "mean": float(np.mean(map50)),
-                    "std": float(np.std(map50))
-                },
-                "mAP50-95": {
-                    "mean": float(np.mean(map50_95)),
-                    "std": float(np.std(map50_95))
-                }
-            }
-            
-            # Print summary results
-            print(f"Precision: {metrics_summary['precision']['mean']:.4f} ± {metrics_summary['precision']['std']:.4f}")
-            print(f"Recall: {metrics_summary['recall']['mean']:.4f} ± {metrics_summary['recall']['std']:.4f}")
-            print(f"mAP50: {metrics_summary['mAP50']['mean']:.4f} ± {metrics_summary['mAP50']['std']:.4f}")
-            print(f"mAP50-95: {metrics_summary['mAP50-95']['mean']:.4f} ± {metrics_summary['mAP50-95']['std']:.4f}")
-            
-            # Save metrics as JSON
-            with open(os.path.join(model_results_dir, "cross_validation_metrics.json"), "w") as f:
-                json.dump(metrics_summary, f, indent=4)
-            
-            # Plot metrics for each fold
-            plt.figure(figsize=(12, 10))
-            
-            # Plot mAP50
-            plt.subplot(2, 2, 1)
-            plt.bar(range(1, len(successful_runs) + 1), map50)
-            plt.axhline(y=metrics_summary['mAP50']['mean'], color='r', linestyle='-')
-            plt.title(f"mAP50 by Fold (Avg: {metrics_summary['mAP50']['mean']:.4f})")
-            plt.xlabel("Fold")
-            plt.ylabel("mAP50")
-            
-            # Plot mAP50-95
-            plt.subplot(2, 2, 2)
-            plt.bar(range(1, len(successful_runs) + 1), map50_95)
-            plt.axhline(y=metrics_summary['mAP50-95']['mean'], color='r', linestyle='-')
-            plt.title(f"mAP50-95 by Fold (Avg: {metrics_summary['mAP50-95']['mean']:.4f})")
-            plt.xlabel("Fold")
-            plt.ylabel("mAP50-95")
-            
-            # Plot Precision
-            plt.subplot(2, 2, 3)
-            plt.bar(range(1, len(successful_runs) + 1), precision)
-            plt.axhline(y=metrics_summary['precision']['mean'], color='r', linestyle='-')
-            plt.title(f"Precision by Fold (Avg: {metrics_summary['precision']['mean']:.4f})")
-            plt.xlabel("Fold")
-            plt.ylabel("Precision")
-            
-            # Plot Recall
-            plt.subplot(2, 2, 4)
-            plt.bar(range(1, len(successful_runs) + 1), recall)
-            plt.axhline(y=metrics_summary['recall']['mean'], color='r', linestyle='-')
-            plt.title(f"Recall by Fold (Avg: {metrics_summary['recall']['mean']:.4f})")
-            plt.xlabel("Fold")
-            plt.ylabel("Recall")
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(model_results_dir, "cross_validation_metrics.png"))
-            
-            # Store summary for this model
-            all_models_results[model_type] = metrics_summary
-        
+            # First, check available attributes in the metrics object
+            # This is safer than assuming specific attributes
+            if model_metrics:
+                sample_metric = model_metrics[0]
+                # Print available attributes for debugging
+                print("Available metrics attributes:", dir(sample_metric))
+                print("Available box metrics attributes:", dir(sample_metric.box) if hasattr(sample_metric, 'box') else "No box attribute")
+                
+                # Extract key metrics safely with proper attribute verification
+                try:
+                    # Try to extract precision (mAP) - use getattr with default to avoid errors
+                    precision = [getattr(m.box, 'map', 0.0) for m in model_metrics]
+                    
+                    # For recall, it might be stored differently in newer versions - try possible naming conventions
+                    # In newer YOLOv8 versions, it might just be 'r' or some other abbreviation
+                    if hasattr(model_metrics[0].box, 'r'):
+                        recall = [m.box.r for m in model_metrics]
+                    elif hasattr(model_metrics[0].box, 'recall'):
+                        recall = [m.box.recall for m in model_metrics]
+                    else:
+                        # Default to zeros if not found, but log this issue
+                        print("Warning: Recall metric not found with expected attribute names")
+                        recall = [0.0] * len(model_metrics)
+                    
+                    # mAP50 and mAP50-95 are usually available
+                    map50 = [m.box.map50 for m in model_metrics]
+                    map50_95 = [m.box.map50_95 for m in model_metrics]
+                    
+                    # Calculate means and standard deviations
+                    metrics_summary = {
+                        "precision": {
+                            "mean": float(np.mean(precision)),
+                            "std": float(np.std(precision))
+                        },
+                        "recall": {
+                            "mean": float(np.mean(recall)),
+                            "std": float(np.std(recall))
+                        },
+                        "mAP50": {
+                            "mean": float(np.mean(map50)),
+                            "std": float(np.std(map50))
+                        },
+                        "mAP50-95": {
+                            "mean": float(np.mean(map50_95)),
+                            "std": float(np.std(map50_95))
+                        }
+                    }
+                    
+                    # Print summary results
+                    print(f"Precision: {metrics_summary['precision']['mean']:.4f} ± {metrics_summary['precision']['std']:.4f}")
+                    print(f"Recall: {metrics_summary['recall']['mean']:.4f} ± {metrics_summary['recall']['std']:.4f}")
+                    print(f"mAP50: {metrics_summary['mAP50']['mean']:.4f} ± {metrics_summary['mAP50']['std']:.4f}")
+                    print(f"mAP50-95: {metrics_summary['mAP50-95']['mean']:.4f} ± {metrics_summary['mAP50-95']['std']:.4f}")
+                    
+                    # Save metrics as JSON
+                    with open(os.path.join(model_results_dir, "cross_validation_metrics.json"), "w") as f:
+                        json.dump(metrics_summary, f, indent=4)
+                    
+                    # Plot metrics for each fold
+                    plt.figure(figsize=(12, 10))
+                    
+                    # Plot mAP50
+                    plt.subplot(2, 2, 1)
+                    plt.bar(range(1, len(successful_runs) + 1), map50)
+                    plt.axhline(y=metrics_summary['mAP50']['mean'], color='r', linestyle='-')
+                    plt.title(f"mAP50 by Fold (Avg: {metrics_summary['mAP50']['mean']:.4f})")
+                    plt.xlabel("Fold")
+                    plt.ylabel("mAP50")
+                    
+                    # Plot mAP50-95
+                    plt.subplot(2, 2, 2)
+                    plt.bar(range(1, len(successful_runs) + 1), map50_95)
+                    plt.axhline(y=metrics_summary['mAP50-95']['mean'], color='r', linestyle='-')
+                    plt.title(f"mAP50-95 by Fold (Avg: {metrics_summary['mAP50-95']['mean']:.4f})")
+                    plt.xlabel("Fold")
+                    plt.ylabel("mAP50-95")
+                    
+                    # Plot Precision
+                    plt.subplot(2, 2, 3)
+                    plt.bar(range(1, len(successful_runs) + 1), precision)
+                    plt.axhline(y=metrics_summary['precision']['mean'], color='r', linestyle='-')
+                    plt.title(f"Precision by Fold (Avg: {metrics_summary['precision']['mean']:.4f})")
+                    plt.xlabel("Fold")
+                    plt.ylabel("Precision")
+                    
+                    # Plot Recall
+                    plt.subplot(2, 2, 4)
+                    plt.bar(range(1, len(successful_runs) + 1), recall)
+                    plt.axhline(y=metrics_summary['recall']['mean'], color='r', linestyle='-')
+                    plt.title(f"Recall by Fold (Avg: {metrics_summary['recall']['mean']:.4f})")
+                    plt.xlabel("Fold")
+                    plt.ylabel("Recall")
+                    
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(model_results_dir, "cross_validation_metrics.png"))
+                    
+                    # Store summary for this model
+                    all_models_results[model_type] = metrics_summary
+                
+                except Exception as e:
+                    print(f"Error processing metrics for {model_type}: {e}")
+                    # Save available metrics data for debugging
+                    if model_metrics:
+                        with open(os.path.join(model_results_dir, "raw_metrics_debug.json"), "w") as f:
+                            # Convert metrics to dictionary for JSON serialization
+                            debug_data = {
+                                f"fold_{i+1}": {
+                                    "available_attrs": dir(m),
+                                    "box_attrs": dir(m.box) if hasattr(m, 'box') else "No box attribute"
+                                }
+                                for i, m in enumerate(model_metrics)
+                            }
+                            json.dump(debug_data, f, indent=4)
+                    all_models_results[model_type] = {"error": f"Metrics processing error: {str(e)}"}
+            else:
+                print(f"No metrics data available for {model_type}")
+                all_models_results[model_type] = {"error": "No metrics data available"}
         else:
             print(f"No successful runs for {model_type}")
             all_models_results[model_type] = {"error": "No successful runs"}
