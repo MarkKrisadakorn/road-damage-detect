@@ -13,7 +13,6 @@ model_types = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.
 epochs = 3
 imgsz = 640
 batch_size = 8
-patience = 20  # Early stopping patience
 device = 0  
 
 # Create timestamp for unique run identifier
@@ -38,7 +37,6 @@ def train_fold(model_type, fold_num, project_dir):
         "epochs": epochs,
         "imgsz": imgsz,
         "batch": batch_size,  # Using the same batch size for all models
-        "patience": patience,
         "device": device,
         "name": f"{model_type.split('.')[0]}_fold{fold_num}",
         "project": project_dir,
