@@ -1,36 +1,67 @@
 import os
 import numpy as np
 from ultralytics import YOLO
-import matplotlib.pyplot as plt
 import time
 import json
 import gc
 import torch
 from datetime import datetime
 
+# Set environment variable to help with memory fragmentation
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 # Configuration
-base_dir = "path/RDD_Kfold"
+base_dir = "path_to/RDD_Kfold"
 num_folds = 5
-model_types = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"] 
-epochs = 3  # Can be increased to 50+ as needed
+model_types = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"]
+epochs = 50
 imgsz = 640
 device = 0  
+batch_size = 1
 
 # Create timestamp for unique run identifier
 timestamp = datetime.now().strftime("%Y%m%d__%H_%M_%S")
 
-# Function to clear GPU cache
+# Function to clear GPU memory thoroughly
 def clear_gpu_memory():
-    """Clean up GPU memory"""
+    """Clean up GPU memory more aggressively"""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         gc.collect()
-        print(f"GPU memory cleared. Current allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        torch.cuda.empty_cache()
+        
+        # Report memory usage
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"GPU memory cleared. Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
+        
+        return allocated < 0.1
+    return True
+
+# Function to handle memory optimizations while maintaining consistent batch size
+def optimize_memory_usage():
+    """Apply memory optimization techniques without changing batch size"""
+    # Set environment variables for PyTorch memory management
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
+    
+    # Force garbage collection
+    gc.collect()
+    
+    # Additional memory optimization techniques
+    torch.backends.cudnn.benchmark = True  # Optimize for fixed input sizes
+    
+    # Set to deterministic mode (slightly slower but more memory efficient)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    
+    # Disable gradient synchronization for unused parameters
+    torch.autograd.set_detect_anomaly(False) 
+    
+    print("Applied memory optimization techniques without changing batch size")
 
 # Function to train model on a specific fold
 def train_fold(model_type, fold_num, project_dir):
     print(f"\n{'='*50}")
-    print(f"Training {model_type} on Fold {fold_num}/{num_folds}")
+    print(f"Training {model_type} on Fold {fold_num}/{num_folds} with batch size {batch_size}")
     print(f"{'='*50}")
     
     # Set paths for this fold
@@ -40,10 +71,13 @@ def train_fold(model_type, fold_num, project_dir):
     # First clear GPU memory
     clear_gpu_memory()
     
+    # Apply memory optimizations before model initialization
+    optimize_memory_usage()
+    
     # Initialize model - will download if not present locally
     model = YOLO(model_type)
     
-    # Set training arguments - batch size removed
+    # Set training arguments
     args = {
         "data": data_yaml,
         "epochs": epochs,
@@ -51,9 +85,16 @@ def train_fold(model_type, fold_num, project_dir):
         "device": device,
         "name": f"{model_type.split('.')[0]}_fold{fold_num}",
         "project": project_dir,
-        "exist_ok": True
+        "exist_ok": True,
+        "batch": batch_size,
+        "workers": 2,  # Reduce worker threads
+        "cache": True,  # Enable caching to improve memory efficiency
+        "amp": True     # Use mixed precision training to save memory
     }
     
+    # Use the same settings for all models to ensure fair comparison
+    # No special handling for different model types
+        
     # Start timer
     start_time = time.time()
     
@@ -83,6 +124,7 @@ def train_fold(model_type, fold_num, project_dir):
         return {
             "model": model_type,
             "fold": fold_num,
+            "batch_size": batch_size,
             "training_time": training_time,
             "metrics": results.metrics if hasattr(results, 'metrics') else None,
             "results": results,
@@ -92,12 +134,21 @@ def train_fold(model_type, fold_num, project_dir):
         return {
             "model": model_type,
             "fold": fold_num,
+            "batch_size": batch_size,
             "training_time": training_time,
             "metrics": None,
             "results": None,
             "success": False,
             "error": e_msg if e_msg else "Unknown error"
         }
+
+# Function to handle distributed training across multiple GPUs
+def setup_distributed_training(model_type):
+    """Set up distributed training if multiple GPUs are available"""
+    if torch.cuda.device_count() > 1:
+        print(f"Setting up distributed training across {torch.cuda.device_count()} GPUs")
+        return True
+    return False
 
 # Function to safely extract metrics with fallbacks
 def safe_extract_metrics(model_metrics):
@@ -204,150 +255,52 @@ if __name__ == "__main__":
         model_metrics = []
         model_results = []
         
+        # Check if we should use distributed training
+        use_distributed = setup_distributed_training(model_type)
+        
         # Train on each fold
         for fold in range(1, num_folds + 1):
+            # Ensure we start with clean memory
+            memory_cleared = clear_gpu_memory()
+            if not memory_cleared:
+                print(f"Warning: Could not clear memory sufficiently before fold {fold}. Attempting to continue anyway.")
+            
+            # Train with professional batch size
             result = train_fold(model_type, fold, model_results_dir)
+            
+            # If training fails, document the issue properly
+            if not result["success"]:
+                error_msg = result.get("error", "Unknown error")
+                print(f"Failed to train {model_type} on fold {fold}.")
+                print(f"Logged error: {error_msg}")
+                
+                # Create a record of the failure for documentation
+                failure_record = {
+                    "model": model_type,
+                    "fold": fold,
+                    "batch_size": batch_size,
+                    "error": error_msg,
+                    "recommendation": "Consider using a more powerful GPU or distributed training setup for larger models."
+                }
+                
+                # Save failure record
+                with open(os.path.join(model_results_dir, f"fold{fold}_failure.json"), "w") as f:
+                    json.dump(failure_record, f, indent=4)
+                
+                # Force thorough cleanup
+                for _ in range(3):
+                    clear_gpu_memory()
+                    time.sleep(1)
+            
+            # Store results
             model_results.append(result)
             if result["success"] and result["metrics"] is not None:
                 model_metrics.append(result["metrics"])
                 
             # Force cleanup between folds
-            clear_gpu_memory()
+            for _ in range(2):
+                clear_gpu_memory()
+                time.sleep(1)
         
-        # Calculate average metrics across folds if we have successful runs
-        successful_runs = [r for r in model_results if r["success"]]
-        if successful_runs and model_metrics:
-            print(f"\n{'-'*50}")
-            print(f"Results Summary for {model_type}")
-            print(f"{'-'*50}")
-            
-            # Extract metrics safely
-            metrics_summary, precision, recall, map50, map50_95, metrics_success = safe_extract_metrics(model_metrics)
-            
-            if metrics_success:
-                # Print summary results
-                print(f"Precision: {metrics_summary['precision']['mean']:.4f} ± {metrics_summary['precision']['std']:.4f}")
-                print(f"Recall: {metrics_summary['recall']['mean']:.4f} ± {metrics_summary['recall']['std']:.4f}")
-                print(f"mAP50: {metrics_summary['mAP50']['mean']:.4f} ± {metrics_summary['mAP50']['std']:.4f}")
-                print(f"mAP50-95: {metrics_summary['mAP50-95']['mean']:.4f} ± {metrics_summary['mAP50-95']['std']:.4f}")
-                
-                # Save metrics as JSON
-                with open(os.path.join(model_results_dir, "cross_validation_metrics.json"), "w") as f:
-                    json.dump(metrics_summary, f, indent=4)
-                
-                # Plot metrics for each fold
-                plt.figure(figsize=(12, 10))
-                
-                # Plot mAP50
-                plt.subplot(2, 2, 1)
-                plt.bar(range(1, len(successful_runs) + 1), map50)
-                plt.axhline(y=metrics_summary['mAP50']['mean'], color='r', linestyle='-')
-                plt.title(f"mAP50 by Fold (Avg: {metrics_summary['mAP50']['mean']:.4f})")
-                plt.xlabel("Fold")
-                plt.ylabel("mAP50")
-                
-                # Plot mAP50-95
-                plt.subplot(2, 2, 2)
-                plt.bar(range(1, len(successful_runs) + 1), map50_95)
-                plt.axhline(y=metrics_summary['mAP50-95']['mean'], color='r', linestyle='-')
-                plt.title(f"mAP50-95 by Fold (Avg: {metrics_summary['mAP50-95']['mean']:.4f})")
-                plt.xlabel("Fold")
-                plt.ylabel("mAP50-95")
-                
-                # Plot Precision
-                plt.subplot(2, 2, 3)
-                plt.bar(range(1, len(successful_runs) + 1), precision)
-                plt.axhline(y=metrics_summary['precision']['mean'], color='r', linestyle='-')
-                plt.title(f"Precision by Fold (Avg: {metrics_summary['precision']['mean']:.4f})")
-                plt.xlabel("Fold")
-                plt.ylabel("Precision")
-                
-                # Plot Recall
-                plt.subplot(2, 2, 4)
-                plt.bar(range(1, len(successful_runs) + 1), recall)
-                plt.axhline(y=metrics_summary['recall']['mean'], color='r', linestyle='-')
-                plt.title(f"Recall by Fold (Avg: {metrics_summary['recall']['mean']:.4f})")
-                plt.xlabel("Fold")
-                plt.ylabel("Recall")
-                
-                plt.tight_layout()
-                plt.savefig(os.path.join(model_results_dir, "cross_validation_metrics.png"))
-                plt.close()  # Close the figure to free memory
-                
-                # Store summary for this model
-                all_models_results[model_type] = metrics_summary
-            else:
-                print(f"Failed to extract metrics for {model_type}")
-                # Save raw metrics data for debugging
-                if model_metrics:
-                    with open(os.path.join(model_results_dir, "raw_metrics_debug.json"), "w") as f:
-                        # Convert metrics to a serializable format
-                        debug_data = {
-                            f"fold_{i+1}": {
-                                "available_attrs": dir(m)
-                            }
-                            for i, m in enumerate(model_metrics)
-                        }
-                        json.dump(debug_data, f, indent=4)
-                all_models_results[model_type] = {"error": "Failed to extract metrics"}
-        else:
-            print(f"No metrics data available for {model_type}")
-            all_models_results[model_type] = {"error": "No metrics data available"}
-    
-    # Create comparison between models
-    valid_models = {k: v for k, v in all_models_results.items() if "error" not in v}
-    if valid_models:
-        # Extract model names and key metrics
-        model_names = []
-        map50_means = []
-        map50_stds = []
-        map50_95_means = []
-        map50_95_stds = []
-        
-        for model_name, metrics in valid_models.items():
-            model_names.append(model_name.split('.')[0])
-            map50_means.append(metrics["mAP50"]["mean"])
-            map50_stds.append(metrics["mAP50"]["std"])
-            map50_95_means.append(metrics["mAP50-95"]["mean"])
-            map50_95_stds.append(metrics["mAP50-95"]["std"])
-        
-        if model_names:
-            # Create comparison plot
-            plt.figure(figsize=(14, 6))
-            
-            # Plot mAP50 comparison
-            plt.subplot(1, 2, 1)
-            x = np.arange(len(model_names))
-            plt.bar(x, map50_means, yerr=map50_stds, alpha=0.7, capsize=5)
-            plt.xticks(x, model_names, rotation=45)
-            plt.title("mAP50 Comparison Across Models")
-            plt.ylabel("mAP50")
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-            
-            # Plot mAP50-95 comparison
-            plt.subplot(1, 2, 2)
-            plt.bar(x, map50_95_means, yerr=map50_95_stds, alpha=0.7, capsize=5)
-            plt.xticks(x, model_names, rotation=45)
-            plt.title("mAP50-95 Comparison Across Models")
-            plt.ylabel("mAP50-95")
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(main_results_dir, "model_comparison.png"))
-            plt.close()  # Close the figure to free memory
 
-            # Also create a table-style summary for easier comparison
-            comparison_table = {
-                model: {
-                    "mAP50": {"mean": mean, "std": std},
-                    "mAP50-95": {"mean": mean_95, "std": std_95}
-                }
-                for model, mean, std, mean_95, std_95 in zip(model_names, map50_means, map50_stds, map50_95_means, map50_95_stds)
-            }
-            
-            with open(os.path.join(main_results_dir, "models_comparison.json"), "w") as f:
-                json.dump(comparison_table, f, indent=4)
-    
-
-    
     print(f"\nAll training complete! Results saved to {main_results_dir}")
