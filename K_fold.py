@@ -9,7 +9,7 @@ from sklearn.model_selection import KFold
 base_path = "path_to/RDD2022"
 output_path = "path_/RDD_Kfold"
 
-govs = "China_MotorBike"
+govs = ["China_MotorBike"]
 damageTypes = {1: "D00", 2: "D10", 3: "D20", 4: "D40", 5: "Repair"} 
 
 k_folds = 5
