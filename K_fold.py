@@ -117,25 +117,25 @@ indices = list(range(num_samples))
 random.seed(random_seed)
 random.shuffle(indices)
 
-# Calculate split sizes for 80:10:10
+# Calculate exact split sizes for 80:10:10
 train_size = int(0.8 * num_samples)
 val_size = int(0.1 * num_samples)
-test_size = num_samples - train_size - val_size
+test_size = int(0.1 * num_samples)
 
-fold_size = ceil(num_samples / k_folds)
-fold_indices = [indices[i*fold_size:(i+1)*fold_size] for i in range(k_folds)]
+remaining = num_samples - train_size - val_size - test_size
+train_size += remaining 
+
+train_indices = indices[:train_size]
+val_indices = indices[train_size:train_size + val_size]
+test_indices = indices[train_size + val_size:train_size + val_size + test_size]
 
 for fold in range(k_folds):
-    # Use current fold as test set
-    test_idx = fold_indices[fold]
-    
-    # Remaining indices for train+val
-    remaining_idx = [i for j, idxs in enumerate(fold_indices) if j != fold for i in idxs]
-    
-    # Split remaining into train and val (80:10 ratio from the remaining 90%)
-    val_size_fold = len(remaining_idx) // 9  # 10% of total ≈ 1/9 of remaining
-    val_idx = remaining_idx[:val_size_fold]
-    train_idx = remaining_idx[val_size_fold:]
+    fold_offset = (fold * num_samples // k_folds) % num_samples
+    rotated_indices = indices[fold_offset:] + indices[:fold_offset]
+
+    train_idx = rotated_indices[:train_size]
+    val_idx = rotated_indices[train_size:train_size + val_size]
+    test_idx = rotated_indices[train_size + val_size:train_size + val_size + test_size]
 
     fold_path = os.path.join(output_path, f"fold_{fold + 1}")
     os.makedirs(fold_path, exist_ok=True)
